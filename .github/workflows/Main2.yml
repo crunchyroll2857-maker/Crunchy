@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  android-cloud:
+  android-cloud-vnc:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -16,25 +16,43 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y wget unzip qemu-kvm libvirt-daemon-system libvirt-clients \
-          bridge-utils xvfb x11vnc socat openjdk-11-jdk curl
+          bridge-utils xvfb x11vnc socat openjdk-11-jdk curl git
 
-      - name: Install Android SDK & Emulator
+      - name: Setup Android SDK
         run: |
-          mkdir -p $HOME/android-sdk
-          cd $HOME/android-sdk
-          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip commandlinetools-linux-11076708_latest.zip -d cmdline-tools
-          export ANDROID_SDK_ROOT=$HOME/android-sdk
-          yes | $HOME/android-sdk/cmdline-tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT --licenses
-          $HOME/android-sdk/cmdline-tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT \
-            "platform-tools" "platforms;android-30" "system-images;android-30;google_apis;x86_64" "emulator"
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          cd $HOME/android-sdk/cmdline-tools
+          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip
+          unzip -q tools.zip
+          rm tools.zip
+          mv cmdline-tools latest
 
-      - name: Create & start emulator
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/emulator" >> $GITHUB_PATH
+
+      - name: Install SDK components
         run: |
-          export ANDROID_SDK_ROOT=$HOME/android-sdk
-          echo "no" | $ANDROID_SDK_ROOT/cmdline-tools/bin/avdmanager create avd -n test -k "system-images;android-30;google_apis;x86_64" --device "pixel"
-          nohup $ANDROID_SDK_ROOT/emulator/emulator -avd test -noaudio -no-boot-anim -gpu swiftshader_indirect -no-window &
-          sleep 60  # Wait for boot
+          sdkmanager --sdk_root=$HOME/android-sdk --licenses <<< "y"
+          sdkmanager --sdk_root=$HOME/android-sdk \
+            "platform-tools" "platforms;android-30" \
+            "system-images;android-30;google_apis;x86_64" "emulator"
+
+      - name: Create & start Android emulator
+        run: |
+          echo "no" | avdmanager create avd -n test -k "system-images;android-30;google_apis;x86_64" --device "pixel"
+
+          # Start a virtual display
+          Xvfb :1 -screen 0 1080x1920x24 &
+          export DISPLAY=:1
+
+          # Boot the emulator headless
+          nohup emulator -avd test -noaudio -no-boot-anim -gpu swiftshader_indirect -no-window &
+          echo "Waiting for emulator to boot..."
+          adb wait-for-device
+          sleep 30
+          adb shell input keyevent 82
 
       - name: Install & start Tailscale
         run: |
@@ -44,7 +62,6 @@ jobs:
       - name: Start VNC server
         run: |
           export DISPLAY=:1
-          Xvfb :1 -screen 0 1080x1920x24 &
           x11vnc -display :1 -passwd android123 -forever -shared -bg
           echo "VNC_PASSWORD=android123" >> $GITHUB_ENV
           sleep 10
@@ -53,8 +70,8 @@ jobs:
         run: |
           TAILSCALE_IP=$(tailscale ip -4)
           echo "======================================="
-          echo "Android emulator is running!"
-          echo "Connect using a VNC client (Windows/Android) with:"
+          echo "✅ Android emulator is running!"
+          echo "Connect using a VNC client with:"
           echo "IP: $TAILSCALE_IP"
           echo "Port: 5900"
           echo "Password: $VNC_PASSWORD"
