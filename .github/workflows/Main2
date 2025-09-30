@@ -1,0 +1,62 @@
+name: Android Cloud Phone (VNC + Tailscale)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  android-cloud:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip qemu-kvm libvirt-daemon-system libvirt-clients \
+          bridge-utils xvfb x11vnc socat openjdk-11-jdk curl
+
+      - name: Install Android SDK & Emulator
+        run: |
+          mkdir -p $HOME/android-sdk
+          cd $HOME/android-sdk
+          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip commandlinetools-linux-11076708_latest.zip -d cmdline-tools
+          export ANDROID_SDK_ROOT=$HOME/android-sdk
+          yes | $HOME/android-sdk/cmdline-tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT --licenses
+          $HOME/android-sdk/cmdline-tools/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT \
+            "platform-tools" "platforms;android-30" "system-images;android-30;google_apis;x86_64" "emulator"
+
+      - name: Create & start emulator
+        run: |
+          export ANDROID_SDK_ROOT=$HOME/android-sdk
+          echo "no" | $ANDROID_SDK_ROOT/cmdline-tools/bin/avdmanager create avd -n test -k "system-images;android-30;google_apis;x86_64" --device "pixel"
+          nohup $ANDROID_SDK_ROOT/emulator/emulator -avd test -noaudio -no-boot-anim -gpu swiftshader_indirect -no-window &
+          sleep 60  # Wait for boot
+
+      - name: Install & start Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=android-runner-${GITHUB_RUN_ID}
+
+      - name: Start VNC server
+        run: |
+          export DISPLAY=:1
+          Xvfb :1 -screen 0 1080x1920x24 &
+          x11vnc -display :1 -passwd android123 -forever -shared -bg
+          echo "VNC_PASSWORD=android123" >> $GITHUB_ENV
+          sleep 10
+
+      - name: Show connection info
+        run: |
+          TAILSCALE_IP=$(tailscale ip -4)
+          echo "======================================="
+          echo "Android emulator is running!"
+          echo "Connect using a VNC client (Windows/Android) with:"
+          echo "IP: $TAILSCALE_IP"
+          echo "Port: 5900"
+          echo "Password: $VNC_PASSWORD"
+          echo "======================================="
+          while true; do sleep 300; done
